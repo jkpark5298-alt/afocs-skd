@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #e8eef3;
+  --ink: #0f172a;
+}
+
+html,
+body {
+  min-height: 100%;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, #dbeafe 0%, transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, #e2e8f0 0%, transparent 50%),
+    var(--bg);
+  color: var(--ink);
+}
+
+body {
+  font-family: "Pretendard", "Noto Sans KR", "Segoe UI", sans-serif;
+}
