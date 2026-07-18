@@ -1,8 +1,19 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import type { DayStats, DutyType, GapSuggestion } from "@/lib/duty";
-import { DUTY_COLORS, displayLabel } from "@/lib/duty";
+import { useEffect, useMemo, useState } from "react";
+import type {
+  ClassifiedFlight,
+  DayStats,
+  DutyType,
+  GapSuggestion,
+} from "@/lib/duty";
+import {
+  DUTY_COLORS,
+  buildDayStats,
+  classifyFlight,
+  displayLabel,
+  findSGapSuggestions,
+} from "@/lib/duty";
 
 type AnalyzeResult = {
   sheetName: string;
@@ -16,8 +27,42 @@ type AnalyzeResult = {
   suggestions: GapSuggestion[];
   year: number;
   month: number;
+  sourceFileName?: string;
+  savedAt?: string;
   error?: string;
 };
+
+type FlightDraft = {
+  id?: string;
+  date: string;
+  time: string;
+  flightNo: string;
+  dep: string;
+  apr: string;
+  reg: string;
+};
+
+const STORAGE_PREFIX = "afocs-skd:month:";
+
+function storageKey(year: number, month: number) {
+  return `${STORAGE_PREFIX}${year}-${String(month).padStart(2, "0")}`;
+}
+
+function resultWithFlights(
+  result: AnalyzeResult,
+  flights: ClassifiedFlight[]
+): AnalyzeResult {
+  return {
+    ...result,
+    classified: flights.length,
+    arrivals: flights.filter((flight) => flight.direction === "ARR").length,
+    departures: flights.filter((flight) => flight.direction === "DEP").length,
+    exceptions: flights.filter((flight) => flight.exception).length,
+    dayStats: buildDayStats(flights),
+    suggestions: findSGapSuggestions(flights),
+    savedAt: undefined,
+  };
+}
 
 function monthGrid(year: number, month: number): (string | null)[][] {
   const first = new Date(year, month - 1, 1);
@@ -46,11 +91,33 @@ export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalyzeResult | null>(null);
+  const [isSaved, setIsSaved] = useState(false);
+  const [editor, setEditor] = useState<FlightDraft | null>(null);
   const [selectedTypes, setSelectedTypes] = useState<DutyType[]>([
     "A",
     "C",
     "S",
   ]);
+
+  useEffect(() => {
+    setError(null);
+    setEditor(null);
+    const saved = localStorage.getItem(storageKey(year, month));
+    if (!saved) {
+      setResult(null);
+      setIsSaved(false);
+      return;
+    }
+    try {
+      setResult(JSON.parse(saved) as AnalyzeResult);
+      setIsSaved(true);
+    } catch {
+      localStorage.removeItem(storageKey(year, month));
+      setResult(null);
+      setIsSaved(false);
+      setError("저장된 월별 데이터를 읽지 못해 삭제했습니다.");
+    }
+  }, [year, month]);
 
   const byDate = useMemo(() => {
     const m = new Map<string, DayStats>();
@@ -72,6 +139,10 @@ export default function HomePage() {
   }, [result, selectedTypes]);
 
   const weeks = useMemo(() => monthGrid(year, month), [year, month]);
+  const allFlights = useMemo(
+    () => result?.dayStats.flatMap((day) => day.flights) ?? [],
+    [result]
+  );
 
   function toggleType(type: DutyType) {
     setSelectedTypes((current) => {
@@ -100,7 +171,8 @@ export default function HomePage() {
       const res = await fetch("/api/analyze", { method: "POST", body: form });
       const data = (await res.json()) as AnalyzeResult;
       if (!res.ok) throw new Error(data.error || "분석 실패");
-      setResult(data);
+      setResult({ ...data, sourceFileName: file.name });
+      setIsSaved(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "분석 실패");
     } finally {
@@ -109,20 +181,25 @@ export default function HomePage() {
   }
 
   async function exportExcel() {
-    if (!file) {
-      setError("엑셀 파일을 선택하세요.");
+    if (!result) {
+      setError("먼저 엑셀을 분석하거나 저장된 월을 불러오세요.");
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const form = new FormData();
-      form.set("file", file);
-      form.set("year", String(year));
-      form.set("month", String(month));
-      form.set("mode", "export");
-      form.set("types", selectedTypes.join(","));
-      const res = await fetch("/api/analyze", { method: "POST", body: form });
+      const visibleFlights = allFlights.filter((flight) =>
+        selectedTypes.includes(flight.dutyType)
+      );
+      const dayStats = buildDayStats(visibleFlights);
+      const suggestions = selectedTypes.includes("S")
+        ? findSGapSuggestions(visibleFlights)
+        : [];
+      const res = await fetch("/api/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ year, month, dayStats, suggestions }),
+      });
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(data.error || "내보내기 실패");
@@ -139,6 +216,115 @@ export default function HomePage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function saveMonth() {
+    if (!result) {
+      setError("저장할 캘린더 데이터가 없습니다.");
+      return;
+    }
+    try {
+      const saved = { ...result, savedAt: new Date().toISOString() };
+      localStorage.setItem(storageKey(year, month), JSON.stringify(saved));
+      setResult(saved);
+      setIsSaved(true);
+      setError(null);
+    } catch {
+      setError("브라우저 저장 공간이 부족하여 저장하지 못했습니다.");
+    }
+  }
+
+  function deleteMonth() {
+    if (!window.confirm(`${year}년 ${month}월 저장 데이터를 삭제할까요?`)) {
+      return;
+    }
+    localStorage.removeItem(storageKey(year, month));
+    setResult(null);
+    setIsSaved(false);
+    setEditor(null);
+    setError(null);
+  }
+
+  function openAddFlight(date: string) {
+    setEditor({
+      date,
+      time: "06:31",
+      flightNo: "",
+      dep: "ICN",
+      apr: "",
+      reg: "",
+    });
+  }
+
+  function openEditFlight(flight: ClassifiedFlight) {
+    setEditor({
+      id: flight.id,
+      date: flight.originalDate,
+      time: flight.icnTime,
+      flightNo: flight.flightNo,
+      dep: flight.dep,
+      apr: flight.apr,
+      reg: flight.reg ?? "",
+    });
+  }
+
+  function saveFlight() {
+    if (!editor) return;
+    const classified = classifyFlight(
+      {
+        flightNo: editor.flightNo,
+        reg: editor.reg,
+        dep: editor.dep,
+        apr: editor.apr,
+        time: editor.time,
+        date: editor.date,
+      },
+      Date.now()
+    );
+    if (!classified) {
+      setError("편명·일자·시각을 확인하고 DEP 또는 APR 중 하나를 ICN으로 입력하세요.");
+      return;
+    }
+
+    const base: AnalyzeResult = result ?? {
+      sheetName: "수동입력",
+      warnings: [],
+      totalRows: 0,
+      classified: 0,
+      arrivals: 0,
+      departures: 0,
+      exceptions: 0,
+      dayStats: [],
+      suggestions: [],
+      year,
+      month,
+    };
+    const nextFlight = editor.id
+      ? { ...classified, id: editor.id }
+      : classified;
+    const nextFlights = editor.id
+      ? allFlights.map((flight) =>
+          flight.id === editor.id ? nextFlight : flight
+        )
+      : [...allFlights, nextFlight];
+    setResult(resultWithFlights(base, nextFlights));
+    setIsSaved(false);
+    setEditor(null);
+    setError(null);
+  }
+
+  function deleteFlight(flight: ClassifiedFlight) {
+    if (!result || !window.confirm(`${displayLabel(flight)} 편을 삭제할까요?`)) {
+      return;
+    }
+    setResult(
+      resultWithFlights(
+        result,
+        allFlights.filter((item) => item.id !== flight.id)
+      )
+    );
+    setIsSaved(false);
+    setError(null);
   }
 
   return (
@@ -190,16 +376,41 @@ export default function HomePage() {
           disabled={loading}
           className="rounded bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
         >
-          {loading ? "처리 중…" : "분석"}
+          {loading ? "처리 중…" : "엑셀 불러오기"}
+        </button>
+        <button
+          type="button"
+          onClick={saveMonth}
+          disabled={!result}
+          className="rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+        >
+          월 저장
+        </button>
+        <button
+          type="button"
+          onClick={deleteMonth}
+          disabled={!isSaved}
+          className="rounded border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-700 disabled:opacity-50"
+        >
+          저장 월 삭제
         </button>
         <button
           type="button"
           onClick={exportExcel}
-          disabled={loading || !file}
+          disabled={loading || !result}
           className="rounded border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-800 disabled:opacity-50"
         >
           현재 캘린더 엑셀 다운로드
         </button>
+        <span
+          className={`self-center rounded px-2 py-1 text-xs font-medium ${
+            isSaved
+              ? "bg-emerald-100 text-emerald-800"
+              : "bg-amber-100 text-amber-800"
+          }`}
+        >
+          {isSaved ? "브라우저에 저장됨" : result ? "저장되지 않은 변경 있음" : "저장 데이터 없음"}
+        </span>
       </section>
 
       <div className="mb-6 flex flex-wrap gap-3 text-xs">
@@ -292,13 +503,23 @@ export default function HomePage() {
                   key={iso}
                   className="min-h-[180px] min-w-0 overflow-hidden bg-white p-1.5 text-left"
                 >
-                  <div className="mb-1 flex items-baseline justify-between gap-1">
+                  <div className="mb-1 flex items-center justify-between gap-1">
                     <span className="font-semibold">{dayNum}</span>
-                    {day && (
-                      <span className="shrink-0 text-[10px] text-slate-700">
-                        A{day.a} C{day.c} S{day.s}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {day && (
+                        <span className="shrink-0 text-[10px] text-slate-700">
+                          A{day.a} C{day.c} S{day.s}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => openAddFlight(iso)}
+                        className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-white"
+                        title={`${iso} 항공편 추가`}
+                      >
+                        + 추가
+                      </button>
+                    </div>
                   </div>
                   <ul className="space-y-1 text-[10px] leading-snug text-slate-900">
                     {(day?.flights ?? []).map((f) => (
@@ -313,7 +534,23 @@ export default function HomePage() {
                               : "1px solid transparent",
                         }}
                       >
-                        {displayLabel(f)}
+                        <div className="break-words">{displayLabel(f)}</div>
+                        <div className="mt-1 flex justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={() => openEditFlight(f)}
+                            className="rounded bg-white/80 px-1.5 py-0.5 text-[9px] font-semibold"
+                          >
+                            수정
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteFlight(f)}
+                            className="rounded bg-red-700 px-1.5 py-0.5 text-[9px] font-semibold text-white"
+                          >
+                            삭제
+                          </button>
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -323,6 +560,122 @@ export default function HomePage() {
           )}
         </div>
       </section>
+
+      {editor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              saveFlight();
+            }}
+            className="w-full max-w-lg rounded-lg bg-white p-5 shadow-2xl"
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">
+                항공편 {editor.id ? "수정" : "추가"}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setEditor(null)}
+                className="rounded px-2 py-1 text-slate-500 hover:bg-slate-100"
+              >
+                닫기
+              </button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-sm">
+                <span className="mb-1 block text-slate-500">원본 운항일자</span>
+                <input
+                  required
+                  type="date"
+                  value={editor.date}
+                  onChange={(event) =>
+                    setEditor({ ...editor, date: event.target.value })
+                  }
+                  className="w-full rounded border border-slate-300 px-3 py-2"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-slate-500">ICN 시각</span>
+                <input
+                  required
+                  type="time"
+                  value={editor.time}
+                  onChange={(event) =>
+                    setEditor({ ...editor, time: event.target.value })
+                  }
+                  className="w-full rounded border border-slate-300 px-3 py-2"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-slate-500">편명</span>
+                <input
+                  required
+                  value={editor.flightNo}
+                  onChange={(event) =>
+                    setEditor({ ...editor, flightNo: event.target.value })
+                  }
+                  placeholder="KJ790"
+                  className="w-full rounded border border-slate-300 px-3 py-2 uppercase"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-slate-500">등록기호</span>
+                <input
+                  value={editor.reg}
+                  onChange={(event) =>
+                    setEditor({ ...editor, reg: event.target.value })
+                  }
+                  placeholder="HL7423"
+                  className="w-full rounded border border-slate-300 px-3 py-2 uppercase"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-slate-500">DEP</span>
+                <input
+                  required
+                  value={editor.dep}
+                  onChange={(event) =>
+                    setEditor({ ...editor, dep: event.target.value })
+                  }
+                  placeholder="ICN"
+                  className="w-full rounded border border-slate-300 px-3 py-2 uppercase"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-slate-500">APR</span>
+                <input
+                  required
+                  value={editor.apr}
+                  onChange={(event) =>
+                    setEditor({ ...editor, apr: event.target.value })
+                  }
+                  placeholder="MXP"
+                  className="w-full rounded border border-slate-300 px-3 py-2 uppercase"
+                />
+              </label>
+            </div>
+            <p className="mt-3 text-xs text-slate-500">
+              DEP 또는 APR 중 하나는 ICN이어야 합니다. 00:00~06:30은 전날 S근무로 자동 귀속됩니다.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setEditor(null)}
+                className="rounded border border-slate-300 px-4 py-2 text-sm"
+              >
+                취소
+              </button>
+              <button
+                type="submit"
+                className="rounded bg-blue-700 px-4 py-2 text-sm font-medium text-white"
+              >
+                변경 적용
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {result && result.suggestions.length > 0 && (
         <section className="mb-10">
