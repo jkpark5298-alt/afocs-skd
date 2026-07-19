@@ -31,6 +31,8 @@ export interface ClassifiedFlight {
   dutyType: DutyType;
   /** 예외 전환 여부 (* 표시) */
   exception: boolean;
+  /** 사용자가 시각을 수동 변경했는지 여부 (* 표시) */
+  manualEdited?: boolean;
   /** 캘린더에 붙일 날짜 (S 심야는 전일) */
   calendarDate: string;
   /** 정렬용: 당일 22~23:59 = 0, 익일 00~06:30 = 1, 그 외 일반 */
@@ -283,7 +285,7 @@ export function findSGapSuggestions(flights: ClassifiedFlight[]): GapSuggestion[
 }
 
 export function displayLabel(f: ClassifiedFlight): string {
-  const star = f.exception ? "*" : "";
+  const star = f.exception || f.manualEdited ? "*" : "";
   const route = `${f.dep}→${f.apr}`;
   const reg = f.reg ? ` ${f.reg}` : "";
   return `${f.dutyType}${star} ${f.icnTime} ${route} ${f.flightNo}${reg}`;

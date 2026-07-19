@@ -91,6 +91,9 @@ export default function HomePage() {
   const [result, setResult] = useState<AnalyzeResult | null>(null);
   const [isSaved, setIsSaved] = useState(false);
   const [editor, setEditor] = useState<FlightDraft | null>(null);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [showAllDays, setShowAllDays] = useState(false);
+  const [selectedFlightId, setSelectedFlightId] = useState<string | null>(null);
   const [selectedTypes, setSelectedTypes] = useState<DutyType[]>([
     "A",
     "C",
@@ -101,6 +104,9 @@ export default function HomePage() {
     let cancelled = false;
     setError(null);
     setEditor(null);
+    setSelectedDate(null);
+    setSelectedFlightId(null);
+    setShowAllDays(false);
     setResult(null);
     setIsSaved(false);
     setLoading(true);
@@ -275,6 +281,9 @@ export default function HomePage() {
       setResult(null);
       setIsSaved(false);
       setEditor(null);
+      setSelectedDate(null);
+      setSelectedFlightId(null);
+      setShowAllDays(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "클라우드 삭제에 실패했습니다.");
     } finally {
@@ -294,6 +303,7 @@ export default function HomePage() {
   }
 
   function openEditFlight(flight: ClassifiedFlight) {
+    setSelectedFlightId(flight.id);
     setEditor({
       id: flight.id,
       date: flight.originalDate,
@@ -305,8 +315,46 @@ export default function HomePage() {
     });
   }
 
+  function updateFlightTime(flight: ClassifiedFlight, nextTime: string) {
+    if (!result || !nextTime || nextTime === flight.icnTime) return;
+    const classified = classifyFlight(
+      {
+        flightNo: flight.flightNo,
+        reg: flight.reg ?? "",
+        dep: flight.dep,
+        apr: flight.apr,
+        time: nextTime,
+        date: flight.originalDate,
+      },
+      Date.now()
+    );
+    if (!classified) {
+      setError("시각 형식이 올바르지 않습니다. HH:mm으로 입력하세요.");
+      return;
+    }
+    const nextFlight: ClassifiedFlight = {
+      ...classified,
+      id: flight.id,
+      manualEdited: true,
+      exception: classified.exception || flight.exception,
+    };
+    setResult(
+      resultWithFlights(
+        result,
+        allFlights.map((item) => (item.id === flight.id ? nextFlight : item))
+      )
+    );
+    setSelectedFlightId(flight.id);
+    setSelectedDate(nextFlight.calendarDate);
+    setIsSaved(false);
+    setError(null);
+  }
+
   function saveFlight() {
     if (!editor) return;
+    const original = editor.id
+      ? allFlights.find((flight) => flight.id === editor.id)
+      : undefined;
     const classified = classifyFlight(
       {
         flightNo: editor.flightNo,
@@ -336,8 +384,14 @@ export default function HomePage() {
       year,
       month,
     };
-    const nextFlight = editor.id
-      ? { ...classified, id: editor.id }
+    const timeChanged = !!original && original.icnTime !== classified.icnTime;
+    const nextFlight: ClassifiedFlight = editor.id
+      ? {
+          ...classified,
+          id: editor.id,
+          manualEdited: timeChanged || !!original?.manualEdited,
+          exception: classified.exception || !!original?.exception,
+        }
       : classified;
     const nextFlights = editor.id
       ? allFlights.map((flight) =>
@@ -345,6 +399,8 @@ export default function HomePage() {
         )
       : [...allFlights, nextFlight];
     setResult(resultWithFlights(base, nextFlights));
+    setSelectedFlightId(nextFlight.id);
+    setSelectedDate(nextFlight.calendarDate);
     setIsSaved(false);
     setEditor(null);
     setError(null);
@@ -508,93 +564,175 @@ export default function HomePage() {
         </div>
       )}
 
-      <section className="mb-10 w-full overflow-x-auto">
-        <div
-          className="grid w-full gap-px bg-slate-200 text-sm"
-          style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr))" }}
-        >
-          {["일", "월", "화", "수", "목", "금", "토"].map((d, i) => (
-            <div
-              key={d}
-              className={`min-w-0 bg-slate-100 px-2 py-2 text-center font-medium ${
-                i === 0 ? "text-red-600" : i === 6 ? "text-blue-700" : "text-slate-700"
-              }`}
-            >
-              {d}
-            </div>
-          ))}
-          {weeks.flatMap((week, wi) =>
-            week.map((iso, di) => {
-              if (!iso) {
+      <section className="mb-10 w-full">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setShowAllDays((current) => !current);
+              setSelectedDate(null);
+              setSelectedFlightId(null);
+            }}
+            className={`rounded px-3 py-1.5 text-sm font-medium ${
+              showAllDays
+                ? "bg-blue-700 text-white"
+                : "border border-slate-300 bg-white text-slate-800"
+            }`}
+          >
+            {showAllDays ? "전체 선택 해제" : "전체 선택"}
+          </button>
+          <span className="text-xs text-slate-500">
+            {showAllDays
+              ? "모든 날짜의 세부 편명 표시 중"
+              : selectedDate
+                ? `${selectedDate} 세부 표시 중 · 편명을 누르면 수정/삭제/시간변경`
+                : "날짜를 선택하면 해당 일의 세부 편명이 표시됩니다"}
+          </span>
+        </div>
+        <div className="w-full overflow-x-auto">
+          <div
+            className="grid w-full gap-px bg-slate-200 text-sm"
+            style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr))" }}
+          >
+            {["일", "월", "화", "수", "목", "금", "토"].map((d, i) => (
+              <div
+                key={d}
+                className={`min-w-0 bg-slate-100 px-2 py-2 text-center font-medium ${
+                  i === 0 ? "text-red-600" : i === 6 ? "text-blue-700" : "text-slate-700"
+                }`}
+              >
+                {d}
+              </div>
+            ))}
+            {weeks.flatMap((week, wi) =>
+              week.map((iso, di) => {
+                if (!iso) {
+                  return (
+                    <div
+                      key={`e-${wi}-${di}`}
+                      className="min-h-[90px] min-w-0 bg-slate-50"
+                    />
+                  );
+                }
+                const day = byDate.get(iso);
+                const dayNum = Number(iso.slice(8, 10));
+                const expanded = showAllDays || selectedDate === iso;
                 return (
                   <div
-                    key={`e-${wi}-${di}`}
-                    className="min-h-[110px] min-w-0 bg-slate-50"
-                  />
-                );
-              }
-              const day = byDate.get(iso);
-              const dayNum = Number(iso.slice(8, 10));
-              return (
-                <div
-                  key={iso}
-                  className="min-h-[180px] min-w-0 overflow-hidden bg-white p-1.5 text-left"
-                >
-                  <div className="mb-1 flex items-center justify-between gap-1">
-                    <span className="font-semibold">{dayNum}</span>
-                    <div className="flex items-center gap-1">
-                      {day && (
-                        <span className="shrink-0 text-[10px] text-slate-700">
-                          A{day.a} C{day.c} S{day.s}
-                        </span>
-                      )}
+                    key={iso}
+                    className={`min-h-[90px] min-w-0 overflow-hidden p-1.5 text-left ${
+                      selectedDate === iso
+                        ? "bg-sky-50 ring-2 ring-inset ring-blue-600"
+                        : "bg-white"
+                    }`}
+                  >
+                    <div className="mb-1 flex items-center justify-between gap-1">
                       <button
                         type="button"
-                        onClick={() => openAddFlight(iso)}
-                        className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-white"
-                        title={`${iso} 항공편 추가`}
-                      >
-                        + 추가
-                      </button>
-                    </div>
-                  </div>
-                  <ul className="space-y-1 text-[10px] leading-snug text-slate-900">
-                    {(day?.flights ?? []).map((f) => (
-                      <li
-                        key={f.id}
-                        className="break-words rounded px-1 py-1 font-medium"
-                        style={{
-                          background: DUTY_COLORS[f.dutyType].bg,
-                          border:
-                            f.dutyType === "S"
-                              ? "2px solid #ca8a04"
-                              : "1px solid transparent",
+                        onClick={() => {
+                          setShowAllDays(false);
+                          setSelectedDate((current) =>
+                            current === iso ? null : iso
+                          );
+                          setSelectedFlightId(null);
                         }}
+                        className="font-semibold hover:underline"
                       >
-                        <div className="break-words">{displayLabel(f)}</div>
-                        <div className="mt-1 flex justify-end gap-1">
+                        {dayNum}
+                      </button>
+                      <div className="flex items-center gap-1">
+                        {day && (
+                          <span className="shrink-0 text-[10px] text-slate-700">
+                            A{day.a} C{day.c} S{day.s}
+                          </span>
+                        )}
+                        {expanded && (
                           <button
                             type="button"
-                            onClick={() => openEditFlight(f)}
-                            className="rounded bg-white/80 px-1.5 py-0.5 text-[9px] font-semibold"
+                            onClick={() => openAddFlight(iso)}
+                            className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-white"
+                            title={`${iso} 항공편 추가`}
                           >
-                            수정
+                            + 추가
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => deleteFlight(f)}
-                            className="rounded bg-red-700 px-1.5 py-0.5 text-[9px] font-semibold text-white"
-                          >
-                            삭제
-                          </button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              );
-            })
-          )}
+                        )}
+                      </div>
+                    </div>
+                    {expanded ? (
+                      <ul className="space-y-1 text-[10px] leading-snug text-slate-900">
+                        {(day?.flights ?? []).map((f) => {
+                          const selected = selectedFlightId === f.id;
+                          return (
+                            <li
+                              key={f.id}
+                              className="break-words rounded px-1 py-1 font-medium"
+                              style={{
+                                background: DUTY_COLORS[f.dutyType].bg,
+                                border:
+                                  f.dutyType === "S" || selected
+                                    ? `2px solid ${
+                                        selected ? "#1d4ed8" : "#ca8a04"
+                                      }`
+                                    : "1px solid transparent",
+                              }}
+                            >
+                              <button
+                                type="button"
+                                className="w-full text-left"
+                                onClick={() =>
+                                  setSelectedFlightId((current) =>
+                                    current === f.id ? null : f.id
+                                  )
+                                }
+                              >
+                                <div className="break-words">
+                                  {displayLabel(f)}
+                                </div>
+                              </button>
+                              {selected && (
+                                <div className="mt-1 flex flex-wrap items-center justify-end gap-1">
+                                  <label className="inline-flex items-center gap-1 rounded bg-white/80 px-1 py-0.5 text-[9px] font-semibold">
+                                    시간
+                                    <input
+                                      type="time"
+                                      value={f.icnTime}
+                                      onClick={(event) => event.stopPropagation()}
+                                      onChange={(event) =>
+                                        updateFlightTime(f, event.target.value)
+                                      }
+                                      className="rounded border border-slate-300 bg-white px-1 py-0.5 text-[10px]"
+                                    />
+                                  </label>
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditFlight(f)}
+                                    className="rounded bg-white/80 px-1.5 py-0.5 text-[9px] font-semibold"
+                                  >
+                                    수정
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteFlight(f)}
+                                    className="rounded bg-red-700 px-1.5 py-0.5 text-[9px] font-semibold text-white"
+                                  >
+                                    삭제
+                                  </button>
+                                </div>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <p className="text-[10px] text-slate-400">
+                        {day ? `${day.total}편 · 날짜 선택` : "편 없음"}
+                      </p>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
       </section>
 

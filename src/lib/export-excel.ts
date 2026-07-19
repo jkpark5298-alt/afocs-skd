@@ -149,7 +149,7 @@ export async function buildCalendarWorkbook(opts: {
       f.calendarDate,
       f.originalDate,
       f.dutyType,
-      f.exception ? "*" : "",
+      f.exception || f.manualEdited ? "*" : "",
       f.icnTime,
       f.flightNo,
       f.direction,
