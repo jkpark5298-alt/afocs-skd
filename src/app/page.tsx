@@ -42,10 +42,8 @@ type FlightDraft = {
   reg: string;
 };
 
-const STORAGE_PREFIX = "afocs-skd:month:";
-
 function storageKey(year: number, month: number) {
-  return `${STORAGE_PREFIX}${year}-${String(month).padStart(2, "0")}`;
+  return `${year}-${String(month).padStart(2, "0")}`;
 }
 
 function resultWithFlights(
@@ -100,23 +98,38 @@ export default function HomePage() {
   ]);
 
   useEffect(() => {
+    let cancelled = false;
     setError(null);
     setEditor(null);
-    const saved = localStorage.getItem(storageKey(year, month));
-    if (!saved) {
-      setResult(null);
-      setIsSaved(false);
-      return;
-    }
-    try {
-      setResult(JSON.parse(saved) as AnalyzeResult);
-      setIsSaved(true);
-    } catch {
-      localStorage.removeItem(storageKey(year, month));
-      setResult(null);
-      setIsSaved(false);
-      setError("저장된 월별 데이터를 읽지 못해 삭제했습니다.");
-    }
+    setResult(null);
+    setIsSaved(false);
+    setLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`/api/months/${storageKey(year, month)}`);
+        const body = (await res.json()) as {
+          data?: AnalyzeResult | null;
+          error?: string;
+        };
+        if (!res.ok) throw new Error(body.error || "불러오기 실패");
+        if (cancelled) return;
+        if (body.data) {
+          setResult(body.data);
+          setIsSaved(true);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(
+            e instanceof Error ? e.message : "저장된 월 데이터를 불러오지 못했습니다."
+          );
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [year, month]);
 
   const byDate = useMemo(() => {
@@ -218,31 +231,55 @@ export default function HomePage() {
     }
   }
 
-  function saveMonth() {
+  async function saveMonth() {
     if (!result) {
       setError("저장할 캘린더 데이터가 없습니다.");
       return;
     }
+    setLoading(true);
+    setError(null);
     try {
       const saved = { ...result, savedAt: new Date().toISOString() };
-      localStorage.setItem(storageKey(year, month), JSON.stringify(saved));
+      const res = await fetch(`/api/months/${storageKey(year, month)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(saved),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || "저장 실패");
+      }
       setResult(saved);
       setIsSaved(true);
-      setError(null);
-    } catch {
-      setError("브라우저 저장 공간이 부족하여 저장하지 못했습니다.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "클라우드 저장에 실패했습니다.");
+    } finally {
+      setLoading(false);
     }
   }
 
-  function deleteMonth() {
+  async function deleteMonth() {
     if (!window.confirm(`${year}년 ${month}월 저장 데이터를 삭제할까요?`)) {
       return;
     }
-    localStorage.removeItem(storageKey(year, month));
-    setResult(null);
-    setIsSaved(false);
-    setEditor(null);
+    setLoading(true);
     setError(null);
+    try {
+      const res = await fetch(`/api/months/${storageKey(year, month)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || "삭제 실패");
+      }
+      setResult(null);
+      setIsSaved(false);
+      setEditor(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "클라우드 삭제에 실패했습니다.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   function openAddFlight(date: string) {
@@ -409,7 +446,7 @@ export default function HomePage() {
               : "bg-amber-100 text-amber-800"
           }`}
         >
-          {isSaved ? "브라우저에 저장됨" : result ? "저장되지 않은 변경 있음" : "저장 데이터 없음"}
+          {isSaved ? "클라우드에 저장됨(모든 기기 공유)" : result ? "저장되지 않은 변경 있음" : "저장 데이터 없음"}
         </span>
       </section>
 
