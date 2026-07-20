@@ -209,6 +209,34 @@ export function classifyFlight(row: RawFlightRow, index: number): ClassifiedFlig
   };
 }
 
+/** 기존 편명 시각/일자 수동 변경 후 재분류 (id·manualEdited 유지) */
+export function reclassifyExistingFlight(
+  flight: ClassifiedFlight,
+  overrides: { time?: string; date?: string } = {}
+): ClassifiedFlight | null {
+  const classified = classifyFlight(
+    {
+      flightNo: flight.flightNo,
+      reg: flight.reg ?? "",
+      dep: flight.dep,
+      apr: flight.apr,
+      time: overrides.time ?? flight.icnTime,
+      date: overrides.date ?? flight.originalDate,
+    },
+    Date.now()
+  );
+  if (!classified) return null;
+  return {
+    ...classified,
+    id: flight.id,
+    manualEdited:
+      !!flight.manualEdited ||
+      (overrides.time != null && overrides.time !== flight.icnTime) ||
+      (overrides.date != null && overrides.date !== flight.originalDate),
+    exception: classified.exception,
+  };
+}
+
 export function classifyFlights(rows: RawFlightRow[]): ClassifiedFlight[] {
   const out: ClassifiedFlight[] = [];
   rows.forEach((row, i) => {

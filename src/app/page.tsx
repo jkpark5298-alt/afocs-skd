@@ -13,6 +13,7 @@ import {
   classifyFlight,
   displayLabel,
   findSGapSuggestions,
+  reclassifyExistingFlight,
 } from "@/lib/duty";
 
 type AnalyzeResult = {
@@ -162,6 +163,15 @@ export default function HomePage() {
     () => result?.dayStats.flatMap((day) => day.flights) ?? [],
     [result]
   );
+  const selectedDay = selectedDate ? byDate.get(selectedDate) ?? null : null;
+  const detailDays = useMemo(() => {
+    if (showAllDays) {
+      return [...byDate.values()].sort((a, b) =>
+        a.date < b.date ? -1 : 1
+      );
+    }
+    return selectedDay ? [selectedDay] : [];
+  }, [byDate, showAllDays, selectedDay]);
 
   function toggleType(type: DutyType) {
     setSelectedTypes((current) => {
@@ -315,36 +325,29 @@ export default function HomePage() {
     });
   }
 
+  function shiftMonth(delta: number) {
+    const base = new Date(year, month - 1 + delta, 1);
+    setYear(base.getFullYear());
+    setMonth(base.getMonth() + 1);
+  }
+
   function updateFlightTime(flight: ClassifiedFlight, nextTime: string) {
-    if (!result || !nextTime || nextTime === flight.icnTime) return;
-    const classified = classifyFlight(
-      {
-        flightNo: flight.flightNo,
-        reg: flight.reg ?? "",
-        dep: flight.dep,
-        apr: flight.apr,
-        time: nextTime,
-        date: flight.originalDate,
-      },
-      Date.now()
-    );
-    if (!classified) {
+    if (!result || !nextTime) return;
+    const normalized = nextTime.length >= 5 ? nextTime.slice(0, 5) : nextTime;
+    if (normalized === flight.icnTime) return;
+    const nextFlight = reclassifyExistingFlight(flight, { time: normalized });
+    if (!nextFlight) {
       setError("시각 형식이 올바르지 않습니다. HH:mm으로 입력하세요.");
       return;
     }
-    const nextFlight: ClassifiedFlight = {
-      ...classified,
-      id: flight.id,
-      manualEdited: true,
-      exception: classified.exception || flight.exception,
-    };
     setResult(
       resultWithFlights(
         result,
         allFlights.map((item) => (item.id === flight.id ? nextFlight : item))
       )
     );
-    setSelectedFlightId(flight.id);
+    setShowAllDays(false);
+    setSelectedFlightId(nextFlight.id);
     setSelectedDate(nextFlight.calendarDate);
     setIsSaved(false);
     setError(null);
@@ -355,17 +358,22 @@ export default function HomePage() {
     const original = editor.id
       ? allFlights.find((flight) => flight.id === editor.id)
       : undefined;
-    const classified = classifyFlight(
-      {
-        flightNo: editor.flightNo,
-        reg: editor.reg,
-        dep: editor.dep,
-        apr: editor.apr,
-        time: editor.time,
-        date: editor.date,
-      },
-      Date.now()
-    );
+    const classified = original
+      ? reclassifyExistingFlight(original, {
+          time: editor.time,
+          date: editor.date,
+        })
+      : classifyFlight(
+          {
+            flightNo: editor.flightNo,
+            reg: editor.reg,
+            dep: editor.dep,
+            apr: editor.apr,
+            time: editor.time,
+            date: editor.date,
+          },
+          Date.now()
+        );
     if (!classified) {
       setError("편명·일자·시각을 확인하고 DEP 또는 APR 중 하나를 ICN으로 입력하세요.");
       return;
@@ -384,23 +392,38 @@ export default function HomePage() {
       year,
       month,
     };
-    const timeChanged = !!original && original.icnTime !== classified.icnTime;
-    const nextFlight: ClassifiedFlight = editor.id
-      ? {
-          ...classified,
-          id: editor.id,
-          manualEdited: timeChanged || !!original?.manualEdited,
-          exception: classified.exception || !!original?.exception,
-        }
-      : classified;
+    const nextFlight: ClassifiedFlight =
+      editor.id && original
+        ? {
+            ...classified,
+            flightNo: editor.flightNo.trim().toUpperCase() || classified.flightNo,
+            dep: editor.dep.trim().toUpperCase() || classified.dep,
+            apr: editor.apr.trim().toUpperCase() || classified.apr,
+            reg: editor.reg.trim().toUpperCase() || undefined,
+          }
+        : classified;
+    // If add/edit changed route fields, re-run classify with full editor values
+    const finalized =
+      reclassifyExistingFlight(
+        {
+          ...nextFlight,
+          flightNo: editor.flightNo.trim().toUpperCase() || nextFlight.flightNo,
+          dep: editor.dep.trim().toUpperCase() || nextFlight.dep,
+          apr: editor.apr.trim().toUpperCase() || nextFlight.apr,
+          reg: editor.reg.trim().toUpperCase() || undefined,
+        },
+        { time: editor.time, date: editor.date }
+      ) ?? nextFlight;
+
     const nextFlights = editor.id
       ? allFlights.map((flight) =>
-          flight.id === editor.id ? nextFlight : flight
+          flight.id === editor.id ? finalized : flight
         )
-      : [...allFlights, nextFlight];
+      : [...allFlights, finalized];
     setResult(resultWithFlights(base, nextFlights));
-    setSelectedFlightId(nextFlight.id);
-    setSelectedDate(nextFlight.calendarDate);
+    setShowAllDays(false);
+    setSelectedFlightId(finalized.id);
+    setSelectedDate(finalized.calendarDate);
     setIsSaved(false);
     setEditor(null);
     setError(null);
@@ -443,26 +466,30 @@ export default function HomePage() {
             className="max-w-xs text-sm file:mr-3 file:rounded file:border-0 file:bg-slate-800 file:px-3 file:py-1.5 file:text-white"
           />
         </label>
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="text-slate-500">연도</span>
-          <input
-            type="number"
-            value={year}
-            onChange={(e) => setYear(Number(e.target.value))}
-            className="w-24 rounded border border-slate-300 px-2 py-1.5"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="text-slate-500">월</span>
-          <input
-            type="number"
-            min={1}
-            max={12}
-            value={month}
-            onChange={(e) => setMonth(Number(e.target.value))}
-            className="w-20 rounded border border-slate-300 px-2 py-1.5"
-          />
-        </label>
+        <div className="flex flex-col gap-1 text-sm">
+          <span className="text-slate-500">조회 월</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => shiftMonth(-1)}
+              className="rounded border border-slate-300 bg-white px-3 py-1.5 text-base font-bold"
+              aria-label="이전 달"
+            >
+              ◀
+            </button>
+            <div className="min-w-[8.5rem] rounded border border-slate-300 bg-white px-3 py-1.5 text-center text-sm font-semibold">
+              {year}년 {month}월
+            </div>
+            <button
+              type="button"
+              onClick={() => shiftMonth(1)}
+              className="rounded border border-slate-300 bg-white px-3 py-1.5 text-base font-bold"
+              aria-label="다음 달"
+            >
+              ▶
+            </button>
+          </div>
+        </div>
         <button
           type="button"
           onClick={analyze}
@@ -564,7 +591,7 @@ export default function HomePage() {
         </div>
       )}
 
-      <section className="mb-10 w-full">
+      <section className="mb-6 w-full">
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -583,10 +610,10 @@ export default function HomePage() {
           </button>
           <span className="text-xs text-slate-500">
             {showAllDays
-              ? "모든 날짜의 세부 편명 표시 중"
+              ? "아래 상세 패널에 전체 편명 표시 중"
               : selectedDate
-                ? `${selectedDate} 세부 표시 중 · 편명을 누르면 수정/삭제/시간변경`
-                : "날짜를 선택하면 해당 일의 세부 편명이 표시됩니다"}
+                ? `${selectedDate} 상세를 아래 패널에 표시 중`
+                : "날짜를 누르면 아래 큰 패널에 세부 편명이 표시됩니다"}
           </span>
         </div>
         <div className="w-full overflow-x-auto">
@@ -597,7 +624,7 @@ export default function HomePage() {
             {["일", "월", "화", "수", "목", "금", "토"].map((d, i) => (
               <div
                 key={d}
-                className={`min-w-0 bg-slate-100 px-2 py-2 text-center font-medium ${
+                className={`min-w-0 bg-slate-100 px-1 py-2 text-center text-xs font-medium sm:text-sm ${
                   i === 0 ? "text-red-600" : i === 6 ? "text-blue-700" : "text-slate-700"
                 }`}
               >
@@ -610,131 +637,161 @@ export default function HomePage() {
                   return (
                     <div
                       key={`e-${wi}-${di}`}
-                      className="min-h-[90px] min-w-0 bg-slate-50"
+                      className="min-h-[64px] min-w-0 bg-slate-50 sm:min-h-[72px]"
                     />
                   );
                 }
                 const day = byDate.get(iso);
                 const dayNum = Number(iso.slice(8, 10));
-                const expanded = showAllDays || selectedDate === iso;
+                const active = !showAllDays && selectedDate === iso;
                 return (
-                  <div
+                  <button
+                    type="button"
                     key={iso}
-                    className={`min-h-[90px] min-w-0 overflow-hidden p-1.5 text-left ${
-                      selectedDate === iso
-                        ? "bg-sky-50 ring-2 ring-inset ring-blue-600"
+                    onClick={() => {
+                      setShowAllDays(false);
+                      setSelectedDate((current) =>
+                        current === iso ? null : iso
+                      );
+                      setSelectedFlightId(null);
+                    }}
+                    className={`min-h-[64px] min-w-0 p-1.5 text-left sm:min-h-[72px] ${
+                      active
+                        ? "bg-sky-100 ring-2 ring-inset ring-blue-600"
                         : "bg-white"
                     }`}
                   >
-                    <div className="mb-1 flex items-center justify-between gap-1">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowAllDays(false);
-                          setSelectedDate((current) =>
-                            current === iso ? null : iso
-                          );
-                          setSelectedFlightId(null);
-                        }}
-                        className="font-semibold hover:underline"
-                      >
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-sm font-semibold sm:text-base">
                         {dayNum}
-                      </button>
-                      <div className="flex items-center gap-1">
-                        {day && (
-                          <span className="shrink-0 text-[10px] text-slate-700">
-                            A{day.a} C{day.c} S{day.s}
-                          </span>
-                        )}
-                        {expanded && (
-                          <button
-                            type="button"
-                            onClick={() => openAddFlight(iso)}
-                            className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-white"
-                            title={`${iso} 항공편 추가`}
-                          >
-                            + 추가
-                          </button>
-                        )}
-                      </div>
+                      </span>
+                      {day && (
+                        <span className="text-[9px] leading-tight text-slate-600 sm:text-[10px]">
+                          A{day.a} C{day.c} S{day.s}
+                        </span>
+                      )}
                     </div>
-                    {expanded ? (
-                      <ul className="space-y-1 text-[10px] leading-snug text-slate-900">
-                        {(day?.flights ?? []).map((f) => {
-                          const selected = selectedFlightId === f.id;
-                          return (
-                            <li
-                              key={f.id}
-                              className="break-words rounded px-1 py-1 font-medium"
-                              style={{
-                                background: DUTY_COLORS[f.dutyType].bg,
-                                border:
-                                  f.dutyType === "S" || selected
-                                    ? `2px solid ${
-                                        selected ? "#1d4ed8" : "#ca8a04"
-                                      }`
-                                    : "1px solid transparent",
-                              }}
-                            >
-                              <button
-                                type="button"
-                                className="w-full text-left"
-                                onClick={() =>
-                                  setSelectedFlightId((current) =>
-                                    current === f.id ? null : f.id
-                                  )
-                                }
-                              >
-                                <div className="break-words">
-                                  {displayLabel(f)}
-                                </div>
-                              </button>
-                              {selected && (
-                                <div className="mt-1 flex flex-wrap items-center justify-end gap-1">
-                                  <label className="inline-flex items-center gap-1 rounded bg-white/80 px-1 py-0.5 text-[9px] font-semibold">
-                                    시간
-                                    <input
-                                      type="time"
-                                      value={f.icnTime}
-                                      onClick={(event) => event.stopPropagation()}
-                                      onChange={(event) =>
-                                        updateFlightTime(f, event.target.value)
-                                      }
-                                      className="rounded border border-slate-300 bg-white px-1 py-0.5 text-[10px]"
-                                    />
-                                  </label>
-                                  <button
-                                    type="button"
-                                    onClick={() => openEditFlight(f)}
-                                    className="rounded bg-white/80 px-1.5 py-0.5 text-[9px] font-semibold"
-                                  >
-                                    수정
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => deleteFlight(f)}
-                                    className="rounded bg-red-700 px-1.5 py-0.5 text-[9px] font-semibold text-white"
-                                  >
-                                    삭제
-                                  </button>
-                                </div>
-                              )}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    ) : (
-                      <p className="text-[10px] text-slate-400">
-                        {day ? `${day.total}편 · 날짜 선택` : "편 없음"}
-                      </p>
-                    )}
-                  </div>
+                    <p className="mt-1 text-[9px] text-slate-400 sm:text-[10px]">
+                      {day ? `${day.total}편` : "—"}
+                    </p>
+                  </button>
                 );
               })
             )}
           </div>
         </div>
       </section>
+
+      {detailDays.length > 0 && (
+        <section className="mb-10 rounded-xl border border-slate-300 bg-white p-3 shadow-sm sm:p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-base font-semibold sm:text-lg">
+              {showAllDays ? `${year}년 ${month}월 전체 상세` : `${selectedDate} 상세`}
+            </h2>
+            {!showAllDays && selectedDate && (
+              <button
+                type="button"
+                onClick={() => openAddFlight(selectedDate)}
+                className="rounded bg-slate-800 px-3 py-1.5 text-xs font-bold text-white"
+              >
+                + 항공편 추가
+              </button>
+            )}
+          </div>
+          <div className="space-y-4">
+            {detailDays.map((day) => (
+              <div key={day.date}>
+                {showAllDays && (
+                  <div className="mb-2 flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-slate-800">
+                      {day.date} · A{day.a} C{day.c} S{day.s}
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => openAddFlight(day.date)}
+                      className="rounded bg-slate-800 px-2 py-1 text-[10px] font-bold text-white"
+                    >
+                      + 추가
+                    </button>
+                  </div>
+                )}
+                {!showAllDays && (
+                  <p className="mb-2 text-sm text-slate-600">
+                    A {day.a} · C {day.c} · S {day.s} (합 {day.total})
+                  </p>
+                )}
+                <ul className="space-y-2">
+                  {day.flights.map((f) => {
+                    const selected = selectedFlightId === f.id;
+                    return (
+                      <li
+                        key={f.id}
+                        className="rounded-lg px-3 py-2 text-sm font-medium"
+                        style={{
+                          background: DUTY_COLORS[f.dutyType].bg,
+                          border:
+                            f.dutyType === "S" || selected
+                              ? `2px solid ${selected ? "#1d4ed8" : "#ca8a04"}`
+                              : "1px solid transparent",
+                        }}
+                      >
+                        <button
+                          type="button"
+                          className="w-full text-left"
+                          onClick={() =>
+                            setSelectedFlightId((current) =>
+                              current === f.id ? null : f.id
+                            )
+                          }
+                        >
+                          <div className="break-words text-[13px] leading-snug sm:text-sm">
+                            {displayLabel(f)}
+                          </div>
+                          <div className="mt-1 text-[11px] text-slate-700">
+                            원본일 {f.originalDate} · 캘린더 {f.calendarDate} ·{" "}
+                            {f.dutyType}
+                            {f.manualEdited || f.exception ? "*" : ""}
+                          </div>
+                        </button>
+                        {selected && (
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <label className="inline-flex items-center gap-2 rounded bg-white/90 px-2 py-1 text-xs font-semibold">
+                              시간 변경
+                              <input
+                                type="time"
+                                value={f.icnTime}
+                                onClick={(event) => event.stopPropagation()}
+                                onChange={(event) =>
+                                  updateFlightTime(f, event.target.value)
+                                }
+                                className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => openEditFlight(f)}
+                              className="rounded bg-white px-3 py-1.5 text-xs font-semibold"
+                            >
+                              수정
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteFlight(f)}
+                              className="rounded bg-red-700 px-3 py-1.5 text-xs font-semibold text-white"
+                            >
+                              삭제
+                            </button>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {editor && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
