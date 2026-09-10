@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ClassifiedFlight,
   DayStats,
@@ -15,6 +15,26 @@ import {
   findSGapSuggestions,
   reclassifyExistingFlight,
 } from "@/lib/duty";
+
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+function toIsoDate(year: number, month: number, day: number) {
+  return `${year}-${pad2(month)}-${pad2(day)}`;
+}
+
+/** Deep link: /?year=2026&month=9&day=13 */
+function syncDeepLinkUrl(year: number, month: number, day: number | null) {
+  if (typeof window === "undefined") return;
+  const params = new URLSearchParams();
+  params.set("year", String(year));
+  params.set("month", String(month));
+  if (day != null) params.set("day", String(day));
+  const next = `${window.location.pathname}?${params.toString()}`;
+  const cur = `${window.location.pathname}${window.location.search}`;
+  if (cur !== next) window.history.replaceState(null, "", next);
+}
 
 type AnalyzeResult = {
   sheetName: string;
@@ -100,12 +120,36 @@ export default function HomePage() {
     "C",
     "S",
   ]);
+  const pendingDayRef = useRef<number | null>(null);
+  const [urlReady, setUrlReady] = useState(false);
+
+  // 외부 앱 딥링크: ?year=&month=&day=
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const y = Number(params.get("year"));
+    const m = Number(params.get("month"));
+    const d = Number(params.get("day"));
+    if (Number.isInteger(y) && y >= 2000 && y <= 2100) setYear(y);
+    if (Number.isInteger(m) && m >= 1 && m <= 12) setMonth(m);
+    if (Number.isInteger(d) && d >= 1 && d <= 31) pendingDayRef.current = d;
+    setUrlReady(true);
+  }, []);
 
   useEffect(() => {
+    if (!urlReady) return;
+    const dayNum = selectedDate ? Number(selectedDate.slice(8, 10)) : null;
+    syncDeepLinkUrl(
+      year,
+      month,
+      Number.isInteger(dayNum) && dayNum! >= 1 ? dayNum : null,
+    );
+  }, [urlReady, year, month, selectedDate]);
+
+  useEffect(() => {
+    if (!urlReady) return;
     let cancelled = false;
     setError(null);
     setEditor(null);
-    setSelectedDate(null);
     setSelectedFlightId(null);
     setShowAllDays(false);
     setResult(null);
@@ -124,11 +168,24 @@ export default function HomePage() {
           setResult(body.data);
           setIsSaved(true);
         }
+        const pending = pendingDayRef.current;
+        if (pending != null) {
+          const daysInMonth = new Date(year, month, 0).getDate();
+          if (pending >= 1 && pending <= daysInMonth) {
+            setSelectedDate(toIsoDate(year, month, pending));
+          } else {
+            setSelectedDate(null);
+          }
+          pendingDayRef.current = null;
+        } else {
+          setSelectedDate(null);
+        }
       } catch (e) {
         if (!cancelled) {
           setError(
             e instanceof Error ? e.message : "저장된 월 데이터를 불러오지 못했습니다."
           );
+          setSelectedDate(null);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -137,7 +194,7 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [year, month]);
+  }, [urlReady, year, month]);
 
   const byDate = useMemo(() => {
     const m = new Map<string, DayStats>();
