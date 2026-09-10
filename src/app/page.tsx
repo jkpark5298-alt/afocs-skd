@@ -849,24 +849,6 @@ export default function HomePage() {
               {showAllDays ? `${year}년 ${month}월 전체 상세` : `${selectedDate} 상세`}
             </h2>
             <div className="flex flex-wrap items-center gap-2">
-              {(["A", "C", "S"] as const).map((t) => (
-                <button
-                  type="button"
-                  key={`detail-copy-${t}`}
-                  onClick={() => copyByType(t)}
-                  className="rounded px-3 py-1.5 text-xs font-bold sm:text-sm"
-                  style={{
-                    background: DUTY_COLORS[t].bg,
-                    color: DUTY_COLORS[t].text,
-                    outline:
-                      copyFeedback?.type === t && copyFeedback.ok
-                        ? "2px solid #1d4ed8"
-                        : "2px solid transparent",
-                  }}
-                >
-                  {copyButtonLabel(t)}
-                </button>
-              ))}
               {!showAllDays && selectedDate && (
                 <button
                   type="button"
@@ -878,9 +860,6 @@ export default function HomePage() {
               )}
             </div>
           </div>
-          <p className="mb-3 text-xs text-slate-500">
-            TYPE별 복사 버튼을 누르면 해당 TYPE만 클립보드에 복사됩니다. 다른 앱에 붙여넣기 하세요.
-          </p>
           <div className="space-y-4">
             {detailDays.map((day) => (
               <div key={day.date}>
