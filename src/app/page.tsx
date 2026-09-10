@@ -120,6 +120,10 @@ export default function HomePage() {
     "C",
     "S",
   ]);
+  const [copyFeedback, setCopyFeedback] = useState<{
+    type: DutyType;
+    ok: boolean;
+  } | null>(null);
   const pendingDayRef = useRef<number | null>(null);
   const [urlReady, setUrlReady] = useState(false);
 
@@ -239,6 +243,65 @@ export default function HomePage() {
       }
       return [...current, type];
     });
+  }
+
+  function typeCountSummary(day: DayStats) {
+    const parts: string[] = [];
+    if (selectedTypes.includes("A")) parts.push(`A${day.a}`);
+    if (selectedTypes.includes("C")) parts.push(`C${day.c}`);
+    if (selectedTypes.includes("S")) parts.push(`S${day.s}`);
+    return parts.join(" ");
+  }
+
+  function typeCountDetail(day: DayStats) {
+    const parts: string[] = [];
+    if (selectedTypes.includes("A")) parts.push(`A ${day.a}`);
+    if (selectedTypes.includes("C")) parts.push(`C ${day.c}`);
+    if (selectedTypes.includes("S")) parts.push(`S ${day.s}`);
+    return `${parts.join(" · ")} (합 ${day.total})`;
+  }
+
+  async function copyByType(type: DutyType) {
+    if (!result) return;
+    const sourceDays = showAllDays
+      ? [...result.dayStats].sort((a, b) => (a.date < b.date ? -1 : 1))
+      : selectedDate
+        ? result.dayStats.filter((day) => day.date === selectedDate)
+        : [];
+    if (!sourceDays.length) return;
+
+    const lines: string[] = [];
+    let count = 0;
+    for (const day of sourceDays) {
+      const flights = day.flights.filter((flight) => flight.dutyType === type);
+      if (!flights.length) continue;
+      count += flights.length;
+      lines.push(`${day.date} · ${type} ${flights.length}편`);
+      for (const flight of flights) {
+        lines.push(displayLabel(flight));
+      }
+      lines.push("");
+    }
+
+    if (!count) {
+      setCopyFeedback({ type, ok: false });
+      window.setTimeout(() => setCopyFeedback(null), 2000);
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(lines.join("\n").trim());
+      setCopyFeedback({ type, ok: true });
+    } catch {
+      setCopyFeedback({ type, ok: false });
+    }
+    window.setTimeout(() => setCopyFeedback(null), 2000);
+  }
+
+  function copyButtonLabel(type: DutyType) {
+    if (copyFeedback?.type !== type) return `${type} 복사`;
+    if (copyFeedback.ok) return `${type} 복사됨`;
+    return `${type} 없음`;
   }
 
   async function analyze() {
@@ -614,7 +677,7 @@ export default function HomePage() {
           </button>
         ))}
         <span className="self-center text-slate-500">
-          복수 선택 가능 (최소 1개)
+          TYPE 복수 선택 · 캘린더·상세·복사에 반영 (최소 1개)
         </span>
         <span className="text-slate-500">* = 예외 전환 (도착편)</span>
       </div>
@@ -665,12 +728,52 @@ export default function HomePage() {
           >
             {showAllDays ? "전체 선택 해제" : "전체 선택"}
           </button>
+          {(["A", "C", "S"] as const).map((t) => (
+            <button
+              type="button"
+              key={`cal-${t}`}
+              onClick={() => toggleType(t)}
+              aria-pressed={selectedTypes.includes(t)}
+              className="rounded px-2.5 py-1.5 text-sm font-bold transition"
+              style={{
+                background: selectedTypes.includes(t)
+                  ? DUTY_COLORS[t].bg
+                  : "#e2e8f0",
+                color: DUTY_COLORS[t].text,
+                opacity: selectedTypes.includes(t) ? 1 : 0.4,
+                outline: selectedTypes.includes(t)
+                  ? "2px solid #0f172a"
+                  : "2px solid transparent",
+              }}
+            >
+              {selectedTypes.includes(t) ? "✓ " : ""}
+              {t}
+            </button>
+          ))}
+          <span className="mx-1 hidden text-slate-300 sm:inline">|</span>
+          {(["A", "C", "S"] as const).map((t) => (
+            <button
+              type="button"
+              key={`copy-${t}`}
+              onClick={() => copyByType(t)}
+              disabled={!selectedDate && !showAllDays}
+              className="rounded px-3 py-1.5 text-sm font-semibold disabled:opacity-40"
+              style={{
+                background: DUTY_COLORS[t].bg,
+                color: DUTY_COLORS[t].text,
+                outline:
+                  copyFeedback?.type === t && copyFeedback.ok
+                    ? "2px solid #1d4ed8"
+                    : "2px solid transparent",
+              }}
+            >
+              {copyButtonLabel(t)}
+            </button>
+          ))}
           <span className="text-xs text-slate-500">
-            {showAllDays
-              ? "아래 상세 패널에 전체 편명 표시 중"
-              : selectedDate
-                ? `${selectedDate} 상세를 아래 패널에 표시 중`
-                : "날짜를 누르면 아래 큰 패널에 세부 편명이 표시됩니다"}
+            {!selectedDate && !showAllDays
+              ? "날짜를 먼저 선택하세요"
+              : "TYPE별 복사 → 다른 곳에 붙여넣기"}
           </span>
         </div>
         <div className="w-full overflow-x-auto">
@@ -724,7 +827,7 @@ export default function HomePage() {
                       </span>
                       {day && (
                         <span className="text-[9px] leading-tight text-slate-600 sm:text-[10px]">
-                          A{day.a} C{day.c} S{day.s}
+                          {typeCountSummary(day)}
                         </span>
                       )}
                     </div>
@@ -745,23 +848,46 @@ export default function HomePage() {
             <h2 className="text-base font-semibold sm:text-lg">
               {showAllDays ? `${year}년 ${month}월 전체 상세` : `${selectedDate} 상세`}
             </h2>
-            {!showAllDays && selectedDate && (
-              <button
-                type="button"
-                onClick={() => openAddFlight(selectedDate)}
-                className="rounded bg-slate-800 px-3 py-1.5 text-xs font-bold text-white"
-              >
-                + 항공편 추가
-              </button>
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+              {(["A", "C", "S"] as const).map((t) => (
+                <button
+                  type="button"
+                  key={`detail-copy-${t}`}
+                  onClick={() => copyByType(t)}
+                  className="rounded px-3 py-1.5 text-xs font-bold sm:text-sm"
+                  style={{
+                    background: DUTY_COLORS[t].bg,
+                    color: DUTY_COLORS[t].text,
+                    outline:
+                      copyFeedback?.type === t && copyFeedback.ok
+                        ? "2px solid #1d4ed8"
+                        : "2px solid transparent",
+                  }}
+                >
+                  {copyButtonLabel(t)}
+                </button>
+              ))}
+              {!showAllDays && selectedDate && (
+                <button
+                  type="button"
+                  onClick={() => openAddFlight(selectedDate)}
+                  className="rounded bg-slate-800 px-3 py-1.5 text-xs font-bold text-white"
+                >
+                  + 항공편 추가
+                </button>
+              )}
+            </div>
           </div>
+          <p className="mb-3 text-xs text-slate-500">
+            TYPE별 복사 버튼을 누르면 해당 TYPE만 클립보드에 복사됩니다. 다른 앱에 붙여넣기 하세요.
+          </p>
           <div className="space-y-4">
             {detailDays.map((day) => (
               <div key={day.date}>
                 {showAllDays && (
                   <div className="mb-2 flex items-center justify-between">
                     <h3 className="text-sm font-semibold text-slate-800">
-                      {day.date} · A{day.a} C{day.c} S{day.s}
+                      {day.date} · {typeCountSummary(day)}
                     </h3>
                     <button
                       type="button"
@@ -774,7 +900,7 @@ export default function HomePage() {
                 )}
                 {!showAllDays && (
                   <p className="mb-2 text-sm text-slate-600">
-                    A {day.a} · C {day.c} · S {day.s} (합 {day.total})
+                    {typeCountDetail(day)}
                   </p>
                 )}
                 <ul className="space-y-2">
